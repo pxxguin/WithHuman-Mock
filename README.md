@@ -1,14 +1,16 @@
 # WithHuman — PoC
 
-Minimal connectivity PoC. It always returns **DENY**, for both entry points:
+Minimal connectivity PoC. It returns **DENY** for every tool call, on both
+entry points:
 
 ```text
-External tool:  AgentGateway --gRPC extAuthz--> WithHuman :9000 --> DENY
+External tool:  AgentGateway --gRPC extAuthz--> WithHuman :9000 --> DENY on tools/call
 Internal tool:  Agent hook   --HTTP JSON------> WithHuman :8080 --> DENY
 ```
 
-There is no policy engine yet: a single shared `evaluate()` always denies, and
-each adapter only translates that decision into its own wire format.
+There is no policy engine yet: a single shared `evaluate()` denies every tool
+call and allows everything else (so an MCP client can still connect and list
+tools), and each adapter only translates that decision into its own wire format.
 
 ## Run
 
@@ -53,9 +55,15 @@ curl -X POST http://localhost:8080/v1/hooks/pre-tool \
 
 ### gRPC extAuthz
 
-Envoy External Authorization v3 compatible. Every `Check` call answers with
-`PERMISSION_DENIED` plus a denied HTTP response of `403 Forbidden` and the body
-`Blocked by WithHuman`, so AgentGateway blocks the original request.
+Envoy External Authorization v3 compatible. WithHuman reads the JSON-RPC
+`method` from the forwarded request body:
+
+- `tools/call` (alone or inside a batch) answers `PERMISSION_DENIED` plus a
+  denied HTTP response of `403 Forbidden` and the body `Blocked by WithHuman`,
+  so AgentGateway blocks the call before it reaches the MCP server.
+- Anything else (`initialize`, `tools/list`, bodyless `GET`/`DELETE`) answers
+  `OK`, so AgentGateway forwards it.
+- A body that is not JSON is denied (fail closed).
 
 `proto/` holds a trimmed but wire-compatible copy of the upstream Envoy
 definitions — field numbers match, so callers can keep using the real protos.
@@ -99,7 +107,8 @@ handled separately.
 curl -i -X POST http://<ELASTIC_IP>:3000/mcp \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
+  -H 'Authorization: Bearer <GITHUB_TOKEN>' \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_me","arguments":{}}}'
 ```
 
 ```text
@@ -107,6 +116,8 @@ HTTP/1.1 403 Forbidden
 
 Blocked by WithHuman
 ```
+
+An `initialize` sent the same way is allowed and answered by GitHub.
 
 ### Test the hook proxy path
 
@@ -143,10 +154,18 @@ the EC2 host itself — that is inherent to Docker, not a missing setting here.
 
 ### MCP backend
 
-The MCP route has an empty `targets: []` list. The official AgentGateway image
-is distroless, so a `stdio` target such as `npx` cannot be spawned, and this
-PoC denies every request at extAuthz before a backend is ever selected. Real
-MCP targets are a later change.
+The MCP route proxies to GitHub's remote MCP server
+(`https://api.githubcopilot.com/mcp/`). It is reached over HTTPS, so the
+official distroless AgentGateway image works as is; a `stdio` target such as
+`npx` could not be spawned there.
+
+The gateway holds no GitHub token. Each client sends its own, and AgentGateway
+forwards the `Authorization` header upstream:
+
+```sh
+claude mcp add --transport http github http://<ELASTIC_IP>:3000/mcp \
+  --header "Authorization: Bearer <GITHUB_TOKEN>"
+```
 
 ## Local development
 
