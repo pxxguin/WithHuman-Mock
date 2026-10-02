@@ -3,7 +3,7 @@ mcp:
 
   policies:
     extAuthz:
-      host: localhost:9000
+      host: withhuman:9000
       protocol:
         grpc: {}
 
