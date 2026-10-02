@@ -6,11 +6,11 @@ mod pb {
     include!(concat!(env!("OUT_DIR"), "/_includes.rs"));
 }
 
-use pb::envoy::r#type::v3::{HttpStatus, StatusCode};
 use pb::envoy::service::auth::v3::{
     CheckRequest, CheckResponse, DeniedHttpResponse,
     authorization_server::{Authorization, AuthorizationServer},
 };
+use pb::envoy::r#type::v3::{HttpStatus, StatusCode};
 use pb::google::rpc::Status as RpcStatus;
 use tonic::{Code, Request, Response, Status};
 

@@ -21,10 +21,9 @@ async fn main() -> Result<(), BoxError> {
         .serve(EXTAUTHZ_ADDR.parse()?);
     println!("WithHuman extAuthz listening on {EXTAUTHZ_ADDR}");
 
-    tokio::try_join!(
-        async { hook.await.map_err(BoxError::from) },
-        async { extauthz.await.map_err(BoxError::from) },
-    )?;
+    let hook = async { hook.await.map_err(BoxError::from) };
+    let extauthz = async { extauthz.await.map_err(BoxError::from) };
+    tokio::try_join!(hook, extauthz)?;
 
     Ok(())
 }
