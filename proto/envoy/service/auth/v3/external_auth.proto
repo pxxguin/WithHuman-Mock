@@ -12,15 +12,34 @@ service Authorization {
   rpc Check(CheckRequest) returns (CheckResponse);
 }
 
-// Intentionally empty: the PoC does not inspect the request, and prost
-// silently skips the unknown fields Envoy sends (attributes = 1).
-message CheckRequest {}
+message CheckRequest {
+  AttributeContext attributes = 1;
+}
+
+// Only the path down to the HTTP request is declared; prost silently skips
+// the other upstream fields (source, destination, context_extensions, ...).
+message AttributeContext {
+  message Request {
+    HttpRequest http = 2;
+  }
+
+  message HttpRequest {
+    string method = 2;
+    string path = 4;
+    // Set when the gateway forwards the body (`includeRequestBody`).
+    string body = 11;
+    // Used instead of `body` when the gateway sets `packAsBytes`.
+    bytes raw_body = 12;
+  }
+
+  Request request = 4;
+}
 
 message CheckResponse {
   google.rpc.Status status = 1;
   // Upstream declares fields 2 and 3 inside a `http_response` oneof.
-  // WithHuman only ever answers with the denied branch, and encoding
-  // field 2 alone is byte-identical either way.
+  // An allow is a bare OK status, so WithHuman only ever sets the denied
+  // branch, and encoding field 2 alone is byte-identical either way.
   DeniedHttpResponse denied_response = 2;
 }
 

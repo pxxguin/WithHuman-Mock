@@ -12,22 +12,32 @@ use pb::envoy::service::auth::v3::{
 };
 use pb::envoy::r#type::v3::{HttpStatus, StatusCode};
 use pb::google::rpc::Status as RpcStatus;
+use serde_json::Value;
 use tonic::{Code, Request, Response, Status};
 
-use crate::decision::{self, Decision};
+use crate::decision::{self, Action, Decision};
+
+/// JSON-RPC method that runs an MCP tool.
+const TOOLS_CALL: &str = "tools/call";
 
 #[derive(Debug, Default)]
 pub struct ExtAuthz;
 
 #[tonic::async_trait]
 impl Authorization for ExtAuthz {
-    /// Answers every `Check` call without inspecting it.
+    /// Denies MCP `tools/call` and allows every other request.
     async fn check(
         &self,
-        _request: Request<CheckRequest>,
+        request: Request<CheckRequest>,
     ) -> Result<Response<CheckResponse>, Status> {
-        println!("extAuthz request received -> DENY");
-        Ok(Response::new(to_check_response(decision::evaluate())))
+        let (action, label) = classify(&request.into_inner());
+        let decision = decision::evaluate(action);
+        let verdict = match decision {
+            Decision::Allow => "ALLOW",
+            Decision::Deny { .. } => "DENY",
+        };
+        println!("extAuthz request received ({label}) -> {verdict}");
+        Ok(Response::new(to_check_response(decision)))
     }
 }
 
@@ -35,9 +45,65 @@ pub fn service() -> AuthorizationServer<ExtAuthz> {
     AuthorizationServer::new(ExtAuthz)
 }
 
+/// Works out from the forwarded HTTP body whether this request runs a tool.
+///
+/// Returns the action plus a short label for the log line. A body that is not
+/// JSON cannot be classified and is treated as a tool call (fail closed).
+fn classify(request: &CheckRequest) -> (Action, String) {
+    let http = request
+        .attributes
+        .as_ref()
+        .and_then(|a| a.request.as_ref())
+        .and_then(|r| r.http.as_ref());
+    let Some(http) = http else {
+        return (Action::Other, "no http attributes".to_string());
+    };
+
+    let body = if http.raw_body.is_empty() {
+        http.body.as_bytes()
+    } else {
+        &http.raw_body
+    };
+    if body.is_empty() {
+        return (Action::Other, format!("{} {}", http.method, http.path));
+    }
+
+    let Ok(json) = serde_json::from_slice::<Value>(body) else {
+        return (Action::ToolCall, "unparseable body".to_string());
+    };
+    // A JSON-RPC batch is a tool call if any of its messages is.
+    let messages = match &json {
+        Value::Array(batch) => batch.iter().collect(),
+        single => vec![single],
+    };
+    let methods: Vec<&str> = messages
+        .iter()
+        .filter_map(|m| m.get("method").and_then(Value::as_str))
+        .collect();
+
+    let action = if methods.contains(&TOOLS_CALL) {
+        Action::ToolCall
+    } else {
+        Action::Other
+    };
+    let label = if methods.is_empty() {
+        "no json-rpc method".to_string()
+    } else {
+        methods.join(",")
+    };
+    (action, label)
+}
+
 /// Converts a [`Decision`] into the Envoy response Envoy/AgentGateway expects.
 fn to_check_response(decision: Decision) -> CheckResponse {
     match decision {
+        Decision::Allow => CheckResponse {
+            status: Some(RpcStatus {
+                code: Code::Ok as i32,
+                message: String::new(),
+            }),
+            denied_response: None,
+        },
         Decision::Deny { reason } => CheckResponse {
             status: Some(RpcStatus {
                 code: Code::PermissionDenied as i32,
@@ -56,10 +122,38 @@ fn to_check_response(decision: Decision) -> CheckResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pb::envoy::service::auth::v3::AttributeContext;
+    use pb::envoy::service::auth::v3::attribute_context::{HttpRequest, Request as AttrRequest};
+
+    fn check_request(body: &str) -> CheckRequest {
+        CheckRequest {
+            attributes: Some(AttributeContext {
+                request: Some(AttrRequest {
+                    http: Some(HttpRequest {
+                        method: "POST".to_string(),
+                        path: "/mcp".to_string(),
+                        body: body.to_string(),
+                        raw_body: Vec::new(),
+                    }),
+                }),
+            }),
+        }
+    }
+
+    async fn code_for(body: &str) -> i32 {
+        ExtAuthz
+            .check(Request::new(check_request(body)))
+            .await
+            .expect("check response")
+            .into_inner()
+            .status
+            .expect("rpc status")
+            .code
+    }
 
     #[test]
     fn deny_maps_to_permission_denied_and_403() {
-        let response = to_check_response(decision::evaluate());
+        let response = to_check_response(decision::evaluate(Action::ToolCall));
 
         let status = response.status.expect("rpc status");
         assert_eq!(status.code, Code::PermissionDenied as i32);
@@ -74,15 +168,44 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn check_denies() {
-        let response = ExtAuthz
-            .check(Request::new(CheckRequest {}))
-            .await
-            .expect("check response");
+    async fn tools_call_is_denied() {
+        let body = r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"get_me"}}"#;
+        assert_eq!(code_for(body).await, Code::PermissionDenied as i32);
+    }
 
+    #[tokio::test]
+    async fn tools_call_inside_a_batch_is_denied() {
+        let body = r#"[{"jsonrpc":"2.0","method":"notifications/initialized"},
+                      {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{}}]"#;
+        assert_eq!(code_for(body).await, Code::PermissionDenied as i32);
+    }
+
+    #[tokio::test]
+    async fn handshake_and_listing_are_allowed() {
+        for method in ["initialize", "notifications/initialized", "tools/list"] {
+            let body = format!(r#"{{"jsonrpc":"2.0","id":1,"method":"{method}"}}"#);
+            assert_eq!(code_for(&body).await, Code::Ok as i32, "{method}");
+        }
+    }
+
+    #[tokio::test]
+    async fn bodyless_requests_are_allowed() {
+        assert_eq!(code_for("").await, Code::Ok as i32);
         assert_eq!(
-            response.into_inner().status.expect("rpc status").code,
-            Code::PermissionDenied as i32
+            ExtAuthz
+                .check(Request::new(CheckRequest::default()))
+                .await
+                .unwrap()
+                .into_inner()
+                .status
+                .unwrap()
+                .code,
+            Code::Ok as i32
         );
+    }
+
+    #[tokio::test]
+    async fn unparseable_body_is_denied() {
+        assert_eq!(code_for("not json").await, Code::PermissionDenied as i32);
     }
 }

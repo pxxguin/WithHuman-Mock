@@ -7,7 +7,7 @@ use axum::{Json, Router, routing::post};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::decision::{self, Decision};
+use crate::decision::{self, Action, Decision};
 
 /// Internal response model for `POST /v1/hooks/pre-tool`.
 #[derive(Debug, Serialize)]
@@ -19,6 +19,10 @@ pub struct PreToolResponse {
 impl From<Decision> for PreToolResponse {
     fn from(decision: Decision) -> Self {
         match decision {
+            Decision::Allow => Self {
+                decision: "ALLOW",
+                reason: String::new(),
+            },
             Decision::Deny { reason } => Self {
                 decision: "DENY",
                 reason,
@@ -31,10 +35,10 @@ pub fn router() -> Router {
     Router::new().route("/v1/hooks/pre-tool", post(pre_tool))
 }
 
-/// Accepts any JSON tool call and denies it.
+/// Accepts any JSON tool call and denies it: every `PreToolUse` is a tool call.
 async fn pre_tool(Json(_tool_call): Json<Value>) -> Json<PreToolResponse> {
     println!("PreToolUse request received -> DENY");
-    Json(decision::evaluate().into())
+    Json(decision::evaluate(Action::ToolCall).into())
 }
 
 #[cfg(test)]
