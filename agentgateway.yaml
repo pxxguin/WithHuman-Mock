@@ -1,0 +1,16 @@
+mcp:
+  port: 3000
+
+  policies:
+    extAuthz:
+      host: localhost:9000
+      protocol:
+        grpc: {}
+
+  targets:
+    - name: everything
+      stdio:
+        cmd: npx
+        args:
+          - "-y"
+          - "@modelcontextprotocol/server-everything"
