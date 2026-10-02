@@ -17,8 +17,8 @@ binds:
               - host: withhuman:8080
 
           # External tools. Every MCP request is authorized by WithHuman over
-          # gRPC extAuthz first, which always answers PERMISSION_DENIED, so the
-          # request never reaches a backend.
+          # gRPC extAuthz first. The JSON-RPC body is forwarded so WithHuman
+          # can let the handshake and tools/list through and deny tools/call.
           - name: mcp
             matches:
               - path:
@@ -28,10 +28,17 @@ binds:
                 host: withhuman:9000
                 protocol:
                   grpc: {}
+                includeRequestBody:
+                  # Large tool arguments must still reach WithHuman whole;
+                  # a truncated body would not parse and would be denied.
+                  maxRequestBytes: 1048576
             backends:
-              # Deliberately empty. The official AgentGateway image is
-              # distroless (no node/npx), so a `stdio` target cannot be
-              # spawned, and this PoC denies every request before backend
-              # selection anyway. Real MCP targets come later.
+              # GitHub's remote MCP server over HTTPS, so the official
+              # distroless image needs no node/npx. There is no token here:
+              # each Claude Code client sends its own GitHub token in the
+              # Authorization header and AgentGateway forwards it upstream.
               - mcp:
-                  targets: []
+                  targets:
+                    - name: github
+                      mcp:
+                        host: https://api.githubcopilot.com/mcp/
