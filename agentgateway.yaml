@@ -1,16 +1,37 @@
-mcp:
-  port: 3000
+# Single entry point for the deployment: everything external arrives here.
+# WithHuman stays private on the Compose network (withhuman:8080 / :9000).
+binds:
+  - port: 3000
+    listeners:
+      - name: default
+        routes:
+          # Internal tools. Claude Code's PreToolUse hook posts here and the
+          # request is proxied to WithHuman's hook API. No extAuthz on this
+          # route: this *is* the decision endpoint, so guarding it with
+          # WithHuman would be circular.
+          - name: hook
+            matches:
+              - path:
+                  pathPrefix: /v1/hooks/pre-tool
+            backends:
+              - host: withhuman:8080
 
-  policies:
-    extAuthz:
-      host: withhuman:9000
-      protocol:
-        grpc: {}
-
-  targets:
-    - name: everything
-      stdio:
-        cmd: npx
-        args:
-          - "-y"
-          - "@modelcontextprotocol/server-everything"
+          # External tools. Every MCP request is authorized by WithHuman over
+          # gRPC extAuthz first, which always answers PERMISSION_DENIED, so the
+          # request never reaches a backend.
+          - name: mcp
+            matches:
+              - path:
+                  pathPrefix: /
+            policies:
+              extAuthz:
+                host: withhuman:9000
+                protocol:
+                  grpc: {}
+            backends:
+              # Deliberately empty. The official AgentGateway image is
+              # distroless (no node/npx), so a `stdio` target cannot be
+              # spawned, and this PoC denies every request before backend
+              # selection anyway. Real MCP targets come later.
+              - mcp:
+                  targets: []
