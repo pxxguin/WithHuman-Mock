@@ -1,0 +1,10 @@
+syntax = "proto3";
+
+package google.rpc;
+
+// Wire-compatible subset of google/rpc/status.proto.
+// `details` (field 3) is omitted because WithHuman never sets it.
+message Status {
+  int32 code = 1;
+  string message = 2;
+}

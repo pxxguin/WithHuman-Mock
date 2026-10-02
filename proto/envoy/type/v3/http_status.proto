@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+package envoy.type.v3;
+
+// Wire-compatible subset of envoy/type/v3/http_status.proto.
+// Only the codes WithHuman actually emits are listed.
+enum StatusCode {
+  Empty = 0;
+  Forbidden = 403;
+}
+
+message HttpStatus {
+  StatusCode code = 1;
+}

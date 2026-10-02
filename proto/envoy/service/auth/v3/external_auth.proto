@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+package envoy.service.auth.v3;
+
+import "envoy/type/v3/http_status.proto";
+import "google/rpc/status.proto";
+
+// Wire-compatible subset of Envoy's External Authorization v3 API.
+// Field numbers match upstream, so AgentGateway/Envoy can talk to this
+// server with the real proto definitions on their side.
+service Authorization {
+  rpc Check(CheckRequest) returns (CheckResponse);
+}
+
+// Intentionally empty: the PoC does not inspect the request, and prost
+// silently skips the unknown fields Envoy sends (attributes = 1).
+message CheckRequest {}
+
+message CheckResponse {
+  google.rpc.Status status = 1;
+  // Upstream declares fields 2 and 3 inside a `http_response` oneof.
+  // WithHuman only ever answers with the denied branch, and encoding
+  // field 2 alone is byte-identical either way.
+  DeniedHttpResponse denied_response = 2;
+}
+
+message DeniedHttpResponse {
+  envoy.type.v3.HttpStatus status = 1;
+  // Field 2 (headers) is omitted because WithHuman sets no headers.
+  string body = 3;
+}
