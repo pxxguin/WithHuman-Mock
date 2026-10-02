@@ -1,7 +1,12 @@
 services:
   withhuman:
     build: .
+    image: withhuman-core:latest
     container_name: withhuman
+    restart: unless-stopped
+    # Reachable only as withhuman:8080 / withhuman:9000 from inside the Compose
+    # network. There is deliberately no `ports:` block: publishing these would
+    # put the hook API and the extAuthz server on the EC2 host.
     expose:
       - "8080"
       - "9000"
@@ -9,8 +14,10 @@ services:
   agentgateway:
     image: cr.agentgateway.dev/agentgateway:v1.5.0
     container_name: agentgateway
+    restart: unless-stopped
     depends_on:
       - withhuman
+    # The only port published to the EC2 host, reached via the Elastic IP.
     ports:
       - "3000:3000"
     volumes:
